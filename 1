@@ -1,0 +1,152 @@
+import re
+import json
+import yaml
+import xml.etree.ElementTree as ET
+import argparse
+
+
+
+class FileReader:
+    def read(self, file_path):
+        raise NotImplementedError
+
+
+class PlainTextFileReader(FileReader):
+    def read(self, file_path):
+        with open(file_path, 'r') as file:
+            return file.read()
+
+
+class JSONFileReader(FileReader):
+    def read(self, file_path):
+        with open(file_path, 'r') as file:
+            return json.load(file)
+
+
+class YAMLFileReader(FileReader):
+    def read(self, file_path):
+        with open(file_path, 'r') as file:
+            return yaml.safe_load(file)
+
+
+class XMLFileReader(FileReader):
+    def read(self, file_path):
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        return ET.tostring(root, encoding='unicode')
+
+class FileWriter:
+    def write(self, content, file_path):
+        raise NotImplementedError
+
+class PlainTextFileWriter(FileWriter):
+    def write(self, content, file_path):
+        with open(file_path, 'w') as file:
+            file.write(content)
+
+class JSONFileWriter(FileWriter):
+    def write(self, content, file_path):
+        with open(file_path, 'w') as file:
+            json.dump(content, file, indent=4)
+class YAMLFileWriter(FileWriter):
+    def write(self, content, file_path):
+        with open(file_path, 'w') as file:
+            yaml.dump(content, file)
+class XMLFileWriter(FileWriter):
+    def write(self, content, file_path):
+        root = ET.fromstring(content)
+        tree = ET.ElementTree(root)
+        tree.write(file_path)
+
+class FileProcessor:
+    def process(self, content):
+        raise NotImplementedError
+
+class ArithmeticFileProcessor(FileProcessor):
+    def process(self, content):
+        def eval_expr(match):
+            return str(eval(match.group(0)))
+
+        if isinstance(content, str):
+            return re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_expr, content)
+        elif isinstance(content, dict) or isinstance(content, list):
+            return json.loads(re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_expr, json.dumps(content)))
+        else:
+            raise ValueError("Unsupported content type")
+
+class ApplicationBuilder:
+    def __init__(self):
+        self.reader = None
+        self.writer = None
+        self.processor = None
+
+    def set_reader(self, reader):
+        self.reader = reader
+
+    def set_writer(self, writer):
+        self.writer = writer
+
+    def set_processor(self, processor):
+        self.processor = processor
+
+    def build(self):
+        if not self.reader or not self.writer or not self.processor:
+            raise ValueError("Missing components")
+        return Application(self.reader, self.writer, self.processor)
+
+class Application:
+    def __init__(self, reader, writer, processor):
+        self.reader = reader
+        self.writer = writer
+        self.processor = processor
+
+    def run(self, input_file, output_file):
+        content = self.reader.read(input_file)
+        processed_content = self.processor.process(content)
+        self.writer.write(processed_content, output_file)
+
+
+def select_file_type(prompt):
+    file_types = ['plain', 'json', 'yaml', 'xml']
+    print(prompt)
+    for i, file_type in enumerate(file_types, 1):
+        print(f"{i}. {file_type}")
+    choice = int(input("Выберите тип файла: "))
+    return file_types[choice - 1]
+
+
+def main():
+    input_file = input("Введите путь к входному файлу: ")
+    output_file = input("Введите путь к выходному файлу: ")
+
+    input_type = select_file_type("Выберите тип входного файла:")
+    output_type = select_file_type("Выберите тип выходного файла:")
+
+    builder = ApplicationBuilder()
+
+    if input_type == 'plain':
+        builder.set_reader(PlainTextFileReader())
+    elif input_type == 'json':
+        builder.set_reader(JSONFileReader())
+    elif input_type == 'yaml':
+        builder.set_reader(YAMLFileReader())
+    elif input_type == 'xml':
+        builder.set_reader(XMLFileReader())
+
+    if output_type == 'plain':
+        builder.set_writer(PlainTextFileWriter())
+    elif output_type == 'json':
+        builder.set_writer(JSONFileWriter())
+    elif output_type == 'yaml':
+        builder.set_writer(YAMLFileWriter())
+    elif output_type == 'xml':
+        builder.set_writer(XMLFileWriter())
+
+    builder.set_processor(ArithmeticFileProcessor())
+
+    app = builder.build()
+    app.run(input_file, output_file)
+
+
+if __name__ == '__main__':
+    main()
