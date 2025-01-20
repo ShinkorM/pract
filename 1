@@ -2,10 +2,41 @@ import re
 import json
 import yaml
 import xml.etree.ElementTree as ET
-import argparse
+import zipfile
+import os
 
 
+# Функции архивации/разархивации
+def unzip_file(zip_file_path, output_dir):
+    try:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
+        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+            zip_ref.extractall(output_dir)
+            print(f"Файлы успешно разархивированы в {output_dir}")
+    except FileNotFoundError:
+        print(f"Файл {zip_file_path} не найден.")
+    except zipfile.BadZipFile:
+        print(f"Файл {zip_file_path} не является валидным ZIP-архивом.")
+    except Exception as e:
+        print(f"Произошла ошибка: {e}")
+
+
+def zip_file(file_path, zip_file_path):
+    try:
+        if not os.path.exists(file_path):
+            print(f"Файл {file_path} не найден.")
+            return
+
+        with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(file_path, os.path.basename(file_path))
+            print(f"Файл {file_path} успешно архивирован в {zip_file_path}")
+    except Exception as e:
+        print(f"Произошла ошибка при архивировании: {e}")
+
+
+# Чтение и запись файлов
 class FileReader:
     def read(self, file_path):
         raise NotImplementedError
@@ -35,45 +66,140 @@ class XMLFileReader(FileReader):
         root = tree.getroot()
         return ET.tostring(root, encoding='unicode')
 
+
+class ArchiveFileReader(FileReader):
+    def read(self, file_path):
+        output_dir = 'temp_extracted'
+        unzip_file(file_path, output_dir)
+        file_list = os.listdir(output_dir)
+        if len(file_list) != 1:
+            raise ValueError("Архив должен содержать только один файл")
+        with open(os.path.join(output_dir, file_list[0]), 'r') as file:
+            return file.read()
+
+
+class XORFileReader(FileReader):
+    def __init__(self, key):
+        self.key = key
+
+    def read(self, file_path):
+        with open(file_path, 'rb') as file:
+            encrypted_data = file.read()
+        return self._xor_decrypt(encrypted_data)
+
+    def _xor_decrypt(self, data):
+        return ''.join([chr(b ^ self.key) for b in data])
+
+
+# Запись в файлы
 class FileWriter:
     def write(self, content, file_path):
         raise NotImplementedError
+
 
 class PlainTextFileWriter(FileWriter):
     def write(self, content, file_path):
         with open(file_path, 'w') as file:
             file.write(content)
 
+
 class JSONFileWriter(FileWriter):
     def write(self, content, file_path):
         with open(file_path, 'w') as file:
             json.dump(content, file, indent=4)
+
+
 class YAMLFileWriter(FileWriter):
     def write(self, content, file_path):
         with open(file_path, 'w') as file:
             yaml.dump(content, file)
+
+
 class XMLFileWriter(FileWriter):
     def write(self, content, file_path):
         root = ET.fromstring(content)
         tree = ET.ElementTree(root)
         tree.write(file_path)
 
+
+class ArchiveFileWriter(FileWriter):
+    def write(self, content, file_path):
+        temp_file = 'temp_content.txt'
+        with open(temp_file, 'w') as temp:
+            temp.write(content)
+        zip_file(temp_file, file_path)
+        os.remove(temp_file)
+
+
+class XORFileWriter(FileWriter):
+    def __init__(self, key):
+        self.key = key
+
+    def write(self, content, file_path):
+        encrypted_data = self._xor_encrypt(content.encode('utf-8'))
+        with open(file_path, 'wb') as file:
+            file.write(encrypted_data)
+
+    def _xor_encrypt(self, data):
+        return bytes([b ^ self.key for b in data])
+
+
+# Обработчик файлов
 class FileProcessor:
-    def process(self, content):
+    def process(self, content, method="regex"):
         raise NotImplementedError
 
+
 class ArithmeticFileProcessor(FileProcessor):
-    def process(self, content):
+    def process(self, content, method="regex"):
+        if method == "regex":
+            return self._process_with_regex(content)
+        elif method == "manual":
+            return self._process_without_regex(content)
+        elif method == "library":
+            return self._process_with_library(content)
+        else:
+            raise ValueError("Unsupported method")
+
+    def _process_with_regex(self, content):
         def eval_expr(match):
-            return str(eval(match.group(0)))
+            try:
+                return str(eval(match.group(0)))
+            except Exception:
+                return match.group(0)
 
         if isinstance(content, str):
             return re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_expr, content)
         elif isinstance(content, dict) or isinstance(content, list):
-            return json.loads(re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_expr, json.dumps(content)))
+            json_content = json.dumps(content)
+            processed_json_content = re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_expr, json_content)
+            return json.loads(processed_json_content)
         else:
             raise ValueError("Unsupported content type")
 
+    def _process_without_regex(self, content):
+        # Реализация метода без регулярных выражений
+        pass  # Заглушка
+
+    def _process_with_library(self, content):
+        def eval_with_library(match):
+            expr = match.group(0)
+            try:
+                return str(eval(expr))
+            except Exception:
+                return expr
+
+        if isinstance(content, str):
+            return re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_with_library, content)
+        elif isinstance(content, dict) or isinstance(content, list):
+            json_content = json.dumps(content)
+            processed_json_content = re.sub(r'\b\d+[\+\-\*\/]\d+\b', eval_with_library, json_content)
+            return json.loads(processed_json_content)
+        else:
+            raise ValueError("Unsupported content type")
+
+
+# Построитель приложения
 class ApplicationBuilder:
     def __init__(self):
         self.reader = None
@@ -91,8 +217,9 @@ class ApplicationBuilder:
 
     def build(self):
         if not self.reader or not self.writer or not self.processor:
-            raise ValueError("Missing components")
+            raise ValueError("Отсутствуют необходимые компоненты")
         return Application(self.reader, self.writer, self.processor)
+
 
 class Application:
     def __init__(self, reader, writer, processor):
@@ -100,27 +227,41 @@ class Application:
         self.writer = writer
         self.processor = processor
 
-    def run(self, input_file, output_file):
+    def run(self, input_file, output_file, method="regex", is_archived=False, is_encrypted=False, key=None, archive_first=True):
         content = self.reader.read(input_file)
-        processed_content = self.processor.process(content)
-        self.writer.write(processed_content, output_file)
+        processed_content = self.processor.process(content, method)
 
+        if is_encrypted:
+            if key is not None:
+                writer = XORFileWriter(key)
+            else:
+                raise ValueError("Необходимо указать ключ шифрования.")
+        else:
+            writer = self.writer
 
-def select_file_type(prompt):
-    file_types = ['plain', 'json', 'yaml', 'xml']
-    print(prompt)
-    for i, file_type in enumerate(file_types, 1):
-        print(f"{i}. {file_type}")
-    choice = int(input("Выберите тип файла: "))
-    return file_types[choice - 1]
+        if is_archived:
+            if archive_first:
+                writer.write(processed_content, 'temp_output.zip')
+                zip_file('temp_output.zip', output_file)
+                os.remove('temp_output.zip')
+            else:
+                writer.write(processed_content, output_file)
+                zip_file(output_file, output_file + '.zip')
+        else:
+            writer.write(processed_content, output_file)
 
 
 def main():
     input_file = input("Введите путь к входному файлу: ")
     output_file = input("Введите путь к выходному файлу: ")
 
-    input_type = select_file_type("Выберите тип входного файла:")
-    output_type = select_file_type("Выберите тип выходного файла:")
+    input_type = input("Выберите тип входного файла (plain, json, yaml, xml, archive): ").strip()
+    output_type = input("Выберите тип выходного файла (plain, json, yaml, xml): ").strip()
+    method = input("Выберите метод обработки (regex, manual, library): ").strip()
+    is_archived = input("Архивировать (да/нет)? ").strip().lower() == 'да'
+    is_encrypted = input("Шифровать (да/нет)? ").strip().lower() == 'да'
+    key = int(input("Введите ключ шифрования (целое число): ")) if is_encrypted else None
+    archive_first = input("Сначала архивировать или шифровать (архивировать/шифровать)? ").strip().lower() == 'архивировать'
 
     builder = ApplicationBuilder()
 
@@ -132,6 +273,8 @@ def main():
         builder.set_reader(YAMLFileReader())
     elif input_type == 'xml':
         builder.set_reader(XMLFileReader())
+    elif input_type == 'archive':
+        builder.set_reader(ArchiveFileReader())
 
     if output_type == 'plain':
         builder.set_writer(PlainTextFileWriter())
@@ -145,7 +288,7 @@ def main():
     builder.set_processor(ArithmeticFileProcessor())
 
     app = builder.build()
-    app.run(input_file, output_file)
+    app.run(input_file, output_file, method, is_archived, is_encrypted, key, archive_first)
 
 
 if __name__ == '__main__':
