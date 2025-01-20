@@ -4,37 +4,254 @@ import yaml
 import xml.etree.ElementTree as ET
 import zipfile
 import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import sys
+from flask import Flask, request, send_file, jsonify, render_template
+from flask import send_from_directory
+from werkzeug.utils import secure_filename
+from io import BytesIO
+app = Flask(__name__)
 
+# определяем каталоги для загружаемых файлов и обработанных выходных данных
+UPLOAD_FOLDER = 'data'
+OUTPUT_FOLDER = 'outputs'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Функции архивации/разархивации
-def unzip_file(zip_file_path, output_dir):
+# определяем маршрут для загрузки обработанных файлов
+@app.route('/download/<filename>')
+def download_file(filename):
     try:
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        return send_from_directory(OUTPUT_FOLDER, filename, as_attachment=True)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
-        with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-            zip_ref.extractall(output_dir)
-            print(f"Файлы успешно разархивированы в {output_dir}")
-    except FileNotFoundError:
-        print(f"Файл {zip_file_path} не найден.")
-    except zipfile.BadZipFile:
-        print(f"Файл {zip_file_path} не является валидным ZIP-архивом.")
+
+# Главная страница с формой
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+# Обработка файла
+@app.route('/process', methods=['POST'])
+def process_file():
+    try:
+        uploaded_file = request.files['file']
+        method = int(request.form['method'])
+        encrypt = request.form.get('encrypt') == '1'  # Проверяем, выбрано ли шифрование
+        zip_output = request.form.get('zip') == '1'  # Проверяем, выбрано ли архивирование
+
+        if uploaded_file.filename == '':
+            return jsonify({'status': 'error', 'message': 'Файл не выбран.'})
+
+        filename = secure_filename(uploaded_file.filename)
+        input_path = os.path.join(UPLOAD_FOLDER, filename)
+        output_path = os.path.join(OUTPUT_FOLDER, f"processed_{filename}")
+        uploaded_file.save(input_path)
+
+        file_type = filename.rsplit('.', 1)[-1].lower()
+
+        if file_type == 'zip':
+            extracted_files = extract_zip(input_path, UPLOAD_FOLDER)
+
+            if not extracted_files:
+                return jsonify({'status': 'error', 'message': 'Архив пуст.'})
+
+            # Предполагаем, что в архиве только один файл
+            file_path = extracted_files[0]
+            original_file_type = os.path.splitext(file_path)[1][1:].lower()
+            output_path = os.path.join(OUTPUT_FOLDER, os.path.basename(file_path))  # Сохраняем с оригинальным именем
+
+            try:
+                if original_file_type == 'txt':
+                    PlainTextFileReader()
+                elif original_file_type == 'xml':
+                    XMLFileReader()
+                elif original_file_type == 'json':
+                    JSONFileReader()
+                elif original_file_type == 'yaml':
+                    YAMLFileReader()
+                else:
+                    return jsonify({'status': 'error', 'message': f'Неподдерживаемый тип файла: {original_file_type}.'})
+
+            except Exception as e:
+                return jsonify({'status': 'error', 'message': f'Ошибка при обработке {original_file_type}: {str(e)}'})
+
+
+
+            # Архивируем выходной файл, если выбрано
+            if zip_output:
+                output_path = create_zip(output_path, [output_path])
+
+            return jsonify({
+                'status': 'success',
+                'message': f'Файл "{os.path.basename(output_path)}" успешно обработан.',
+                'download_url': f'/download/{os.path.basename(output_path)}'
+            })
+
+        # Определяем обработку
+        if file_type == 'txt':
+            PlainTextFileWriter()
+        elif file_type == 'xml':
+            XMLFileWriter()
+        elif file_type == 'json':
+            JSONFileReader()
+        elif file_type == 'yaml':
+            YAMLFileWriter()
+        else:
+            return jsonify({'status': 'error', 'message': 'Неподдерживаемый тип файла.'})
+
+
+        if zip_output:
+            output_path = create_zip(output_path, [output_path])
+        return jsonify({'status': 'success', 'message': f'Файл успешно обработан.', 'download_url': f'/download/{os.path.basename(output_path)}'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+# Запуск веб-сервиса
+def main_web():
+    app.run(debug=True)
+def main_gui():
+    def process_file():
+        try:
+            input_file = filedialog.askopenfilename(title="Выберите входной файл")
+            output_file = filedialog.asksaveasfilename(title="Выберите путь для сохранения выходного файла")
+
+            input_type = input_type_var.get()
+            output_type = output_type_var.get()
+            method = method_var.get()
+            is_archived = archive_var.get()
+            is_encrypted = encrypt_var.get()
+            key = int(key_entry.get()) if is_encrypted else None
+            archive_first = archive_first_var.get()
+
+            builder = ApplicationBuilder()
+
+            reader_map = {
+                'plain': PlainTextFileReader(),
+                'json': JSONFileReader(),
+                'yaml': YAMLFileReader(),
+                'xml': XMLFileReader(),
+                'archive': ArchiveFileReader(),
+            }
+            writer_map = {
+                'plain': PlainTextFileWriter(),
+                'json': JSONFileWriter(),
+                'yaml': YAMLFileWriter(),
+                'xml': XMLFileWriter(),
+            }
+
+            builder.set_reader(reader_map[input_type])
+            builder.set_writer(writer_map[output_type])
+            builder.set_processor(ArithmeticFileProcessor())
+
+            app = builder.build()
+
+            # Обработка файла с учетом архивации и шифрования
+            if is_archived:
+                if archive_first:
+                    # Сначала архивируем обработанный файл
+                    temp_output = 'temp_output.txt'
+                    app.run(input_file, temp_output, method, is_archived=False, is_encrypted=is_encrypted, key=key)
+                    zip_path = create_zip(output_file, [temp_output])
+                    if zip_path:
+                        messagebox.showinfo("Успех", f"Файл успешно обработан и сохранен в архиве: {zip_path}")
+                    else:
+                        raise Exception("Не удалось создать архив.")
+                else:
+                    # Сначала обрабатываем файл, затем архивируем
+                    app.run(input_file, output_file, method, is_archived=False, is_encrypted=is_encrypted, key=key)
+                    zip_path = create_zip(output_file, [output_file])
+                    if zip_path:
+                        messagebox.showinfo("Успех", f"Файл успешно обработан и сохранен в архиве: {zip_path}")
+                    else:
+                        raise Exception("Не удалось создать архив.")
+            else:
+                # Без архивирования
+                app.run(input_file, output_file, method, is_archived=False, is_encrypted=is_encrypted, key=key)
+                messagebox.showinfo("Успех", "Файл успешно обработан!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Произошла ошибка: {e}")
+
+    root = tk.Tk()
+    root.title("Обработка файлов")
+
+    tk.Label(root, text="Тип входного файла").grid(row=0, column=0)
+    input_type_var = tk.StringVar(value='plain')
+    tk.OptionMenu(root, input_type_var, 'plain', 'json', 'yaml', 'xml', 'archive').grid(row=0, column=1)
+
+    tk.Label(root, text="Тип выходного файла").grid(row=1, column=0)
+    output_type_var = tk.StringVar(value='plain')
+    tk.OptionMenu(root, output_type_var, 'plain', 'json', 'yaml', 'xml').grid(row=1, column=1)
+
+    tk.Label(root, text="Метод обработки").grid(row=2, column=0)
+    method_var = tk.StringVar(value='regex')
+    tk.OptionMenu(root, method_var, 'regex', 'manual', 'library').grid(row=2, column=1)
+
+    archive_var = tk.BooleanVar()
+    tk.Checkbutton(root, text="Архивировать", variable=archive_var).grid(row=3, column=0)
+
+    encrypt_var = tk.BooleanVar()
+    tk.Checkbutton(root, text="Шифровать", variable=encrypt_var).grid(row=3, column=1)
+
+    tk.Label(root, text="Ключ шифрования").grid(row=4, column=0)
+    key_entry = tk.Entry(root)
+    key_entry.grid(row=4, column=1)
+
+    tk.Label(root, text="Сначала архивировать?").grid(row=5, column=0)
+    archive_first_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(root, text="Да", variable=archive_first_var).grid(row=5, column=1)
+
+    tk.Button(root, text="Запустить", command=process_file).grid(row=6, column=0, columnspan=2)
+
+    root.mainloop()
+
+# Функция обработки файлов в консольном интерфейсе
+def main_console():
+    print("Добро пожаловать в приложение для обработки файлов!")
+    try:
+        input_file = input("Введите путь к входному файлу: ")
+        output_file = input("Введите путь к выходному файлу: ")
+
+        input_type = input("Выберите тип входного файла (plain, json, yaml, xml, archive): ").strip().lower()
+        output_type = input("Выберите тип выходного файла (plain, json, yaml, xml): ").strip().lower()
+        method = input("Выберите метод обработки (regex, manual, library): ").strip().lower()
+        is_archived = input("Архивировать (да/нет)? ").strip().lower() == 'да'
+        is_encrypted = input("Шифровать (да/нет)? ").strip().lower() == 'да'
+
+        key = None
+        if is_encrypted:
+            key = int(input("Введите ключ шифрования (целое число): "))
+
+        archive_first = input("Сначала архивировать или шифровать (архивировать/шифровать)? ").strip().lower() == 'архивировать'
+
+        builder = ApplicationBuilder()
+
+        reader_map = {
+            'plain': PlainTextFileReader(),
+            'json': JSONFileReader(),
+            'yaml': YAMLFileReader(),
+            'xml': XMLFileReader(),
+            'archive': ArchiveFileReader(),
+        }
+        writer_map = {
+            'plain': PlainTextFileWriter(),
+            'json': JSONFileWriter(),
+            'yaml': YAMLFileWriter(),
+            'xml': XMLFileWriter(),
+        }
+
+        builder.set_reader(reader_map[input_type])
+        builder.set_writer(writer_map[output_type])
+        builder.set_processor(ArithmeticFileProcessor())
+
+        app = builder.build()
+        app.run(input_file, output_file, method, is_archived, is_encrypted, key, archive_first)
+        print("Процесс завершён успешно!")
     except Exception as e:
         print(f"Произошла ошибка: {e}")
 
-
-def zip_file(file_path, zip_file_path):
-    try:
-        if not os.path.exists(file_path):
-            print(f"Файл {file_path} не найден.")
-            return
-
-        with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(file_path, os.path.basename(file_path))
-            print(f"Файл {file_path} успешно архивирован в {zip_file_path}")
-    except Exception as e:
-        print(f"Произошла ошибка при архивировании: {e}")
-
+# Функции архивации/разархивации
 
 # Чтение и запись файлов
 class FileReader:
@@ -70,11 +287,10 @@ class XMLFileReader(FileReader):
 class ArchiveFileReader(FileReader):
     def read(self, file_path):
         output_dir = 'temp_extracted'
-        unzip_file(file_path, output_dir)
-        file_list = os.listdir(output_dir)
-        if len(file_list) != 1:
-            raise ValueError("Архив должен содержать только один файл")
-        with open(os.path.join(output_dir, file_list[0]), 'r') as file:
+        extracted_files = extract_zip(file_path, output_dir)  # Используем обновлённую функцию
+        if len(extracted_files) != 1:
+            raise ValueError("Архив должен содержать только один файл.")
+        with open(extracted_files[0], 'r') as file:
             return file.read()
 
 
@@ -125,10 +341,18 @@ class XMLFileWriter(FileWriter):
 class ArchiveFileWriter(FileWriter):
     def write(self, content, file_path):
         temp_file = 'temp_content.txt'
-        with open(temp_file, 'w') as temp:
-            temp.write(content)
-        zip_file(temp_file, file_path)
-        os.remove(temp_file)
+        try:
+            with open(temp_file, 'w') as temp:
+                temp.write(content)
+            zip_filename = create_zip(file_path, [temp_file])  # Используем обновлённую функцию
+            if zip_filename:
+                print(f"Файл успешно архивирован: {zip_filename}")
+            else:
+                print("Ошибка при создании архива.")
+        finally:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)  # Удаляем временный файл
+
 
 
 class XORFileWriter(FileWriter):
@@ -219,6 +443,50 @@ class ApplicationBuilder:
         if not self.reader or not self.writer or not self.processor:
             raise ValueError("Отсутствуют необходимые компоненты")
         return Application(self.reader, self.writer, self.processor)
+def extract_zip(input_path, output_folder):
+    """
+    Извлекает содержимое ZIP-архива в указанную папку.
+
+    :param input_path: Путь к ZIP-архиву
+    :param output_folder: Папка, куда будут извлечены файлы
+    :return: Список извлечённых файлов
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)  # Создаём выходную папку, если она не существует
+
+    try:
+        with zipfile.ZipFile(input_path, 'r') as zip_ref:
+            zip_ref.extractall(output_folder)  # Извлекаем все файлы
+            return [os.path.join(output_folder, name) for name in zip_ref.namelist()]  # Возвращаем список извлечённых файлов
+    except zipfile.BadZipFile:
+        print(f"Ошибка: файл '{input_path}' не является корректным ZIP-архивом.")
+        return []  # Возвращаем пустой список в случае ошибки
+    except Exception as e:
+        print(f"Ошибка при извлечении ZIP файла: {e}")
+        return []  # Возвращаем пустой список в случае других ошибок
+
+
+def create_zip(output_path, files):
+    """
+    Создаёт ZIP-архив из списка файлов.
+
+    :param output_path: Путь к создаваемому ZIP-файлу
+    :param files: Список путей к файлам, которые нужно архивировать
+    :return: Путь к созданному ZIP-файлу
+    """
+    zip_filename = f"{os.path.splitext(output_path)[0]}.zip"  # Создаём имя ZIP файла
+    try:
+        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file in files:
+                if os.path.exists(file):
+                    zipf.write(file, arcname=os.path.basename(file))  # Добавляем файл в ZIP
+                else:
+                    print(f"Внимание: файл '{file}' не найден и не будет добавлен в архив.")
+        return zip_filename
+    except Exception as e:
+        print(f"Ошибка при создании ZIP архива: {e}")
+        return None
+
 
 
 class Application:
@@ -241,54 +509,33 @@ class Application:
 
         if is_archived:
             if archive_first:
-                writer.write(processed_content, 'temp_output.zip')
-                zip_file('temp_output.zip', output_file)
-                os.remove('temp_output.zip')
+                # Сначала архивируем обработанный файл
+                writer.write(processed_content, 'temp_output.txt')
+                create_zip(output_file, ['temp_output.txt'])
+                os.remove('temp_output.txt')
             else:
+                # Сначала шифруем/пишем, затем архивируем
                 writer.write(processed_content, output_file)
-                zip_file(output_file, output_file + '.zip')
+                create_zip(output_file, [output_file])
         else:
             writer.write(processed_content, output_file)
 
 
 def main():
-    input_file = input("Введите путь к входному файлу: ")
-    output_file = input("Введите путь к выходному файлу: ")
+    print("Выберите режим работы:")
+    print("1. Консольный интерфейс")
+    print("2. Графический интерфейс")
+    print("3. Веб-сервис")
+    choice = input("Введите 1, 2 или 3: ").strip()
 
-    input_type = input("Выберите тип входного файла (plain, json, yaml, xml, archive): ").strip()
-    output_type = input("Выберите тип выходного файла (plain, json, yaml, xml): ").strip()
-    method = input("Выберите метод обработки (regex, manual, library): ").strip()
-    is_archived = input("Архивировать (да/нет)? ").strip().lower() == 'да'
-    is_encrypted = input("Шифровать (да/нет)? ").strip().lower() == 'да'
-    key = int(input("Введите ключ шифрования (целое число): ")) if is_encrypted else None
-    archive_first = input("Сначала архивировать или шифровать (архивировать/шифровать)? ").strip().lower() == 'архивировать'
-
-    builder = ApplicationBuilder()
-
-    if input_type == 'plain':
-        builder.set_reader(PlainTextFileReader())
-    elif input_type == 'json':
-        builder.set_reader(JSONFileReader())
-    elif input_type == 'yaml':
-        builder.set_reader(YAMLFileReader())
-    elif input_type == 'xml':
-        builder.set_reader(XMLFileReader())
-    elif input_type == 'archive':
-        builder.set_reader(ArchiveFileReader())
-
-    if output_type == 'plain':
-        builder.set_writer(PlainTextFileWriter())
-    elif output_type == 'json':
-        builder.set_writer(JSONFileWriter())
-    elif output_type == 'yaml':
-        builder.set_writer(YAMLFileWriter())
-    elif output_type == 'xml':
-        builder.set_writer(XMLFileWriter())
-
-    builder.set_processor(ArithmeticFileProcessor())
-
-    app = builder.build()
-    app.run(input_file, output_file, method, is_archived, is_encrypted, key, archive_first)
+    if choice == "1":
+        main_console()
+    elif choice == "2":
+        main_gui()
+    elif choice == "3":
+        main_web()
+    else:
+        print("Неверный выбор. Завершение работы.")
 
 
 if __name__ == '__main__':
